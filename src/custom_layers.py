@@ -269,30 +269,53 @@ class SparseMoeWrapper(nn.Module):
         self.gate = gate
         self.experts = expert_cache
 
+## ABHI
         self.in_cache_experts = self.update_residency_info()
+        self.threshold = torch.tensor(0.05, device='cuda:0')                                   ## TODO:@Sashankh, update this
 
     
     def update_residency_info(self) -> list:
 
         ## Index value of experts on chip 
-        onchip_exp_idx = [_exp_[1] for _exp_ in self.experts.group_infos[self.layer_id].main_infos]
-        
-        ## On hot encoded mask of on-chip experts
-        tensor = torch.zeros(self.num_experts, dtype=torch.long)
-        tensor[onchip_exp_idx] = 1
-        
-        return tensor
+        onchip_exp_idx =  torch.tensor([_exp_[1] for _exp_ in self.experts.group_infos[self.layer_id].main_infos], device='cuda:0')
 
+        return onchip_exp_idx
+    
+    def get_experts_idx_thresholding(self, weigths, k) -> torch.return_types.topk:
+
+        ## On hot encoded mask of on-chip experts
+        expert_on_chip_one_hot = torch.zeros(self.num_experts, dtype=torch.long, device='cuda:0')
+        expert_on_chip_one_hot[self.in_cache_experts] = 1
+
+        ### STEP 1: Increase the value of experts on chip
+        updated_weights = weigths + expert_on_chip_one_hot * self.threshold       
+
+        ### STEP 2: Find Top K with updated weights
+        values, indices = torch.topk(updated_weights, k, dim=-1)
+
+        ### STEP 3: change the weight to original weights
+        mask = torch.any(self.in_cache_experts.unsqueeze(-1) == indices.unsqueeze(-2), dim=-2)
+        values[mask] -= self.threshold
+
+        return values, indices
+## IHBA
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-
+## ABHI
+        self.in_cache_experts = self.update_residency_info()            
+## IHBA
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+
+        #### DEFAULT
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        
+        #### THRESHOLDING
+        # routing_weights, selected_experts = self.get_experts_idx_thresholding(routing_weights, self.top_k)
 
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype
@@ -309,15 +332,7 @@ class SparseMoeWrapper(nn.Module):
         ## Unordered activated experts list
         active_experts = selected_experts.flatten().unique().tolist()
 
-        ## For Decode Phase only
-        # if hidden_states.shape[0] == 1:
-            # expert_residency_info = self.experts.group_infos[self.layer_id]
-            # print(f"On chip Experts:{expert_residency_info.main_infos} , Offloaded: {expert_residency_info.offloaded_infos}")
-            # for on_chip_num,_on_chip_exp_ in enumerate(expert_residency_info.main_infos):
-            #     print(f"On chip Expert {on_chip_num}:{_on_chip_exp_}")
-        self.in_cache_experts = self.update_residency_info()            
-        # print(self.in_cache_experts)
-        
+   
         # Loop over all available experts in the model and perform the computation on each expert
         for (_layer_index, expert_idx), expert_layer in self.experts.load_experts(
                 *((self.layer_id, expert_idx) for expert_idx in active_experts), unordered=True):
@@ -338,4 +353,5 @@ class SparseMoeWrapper(nn.Module):
             # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+
         return final_hidden_states, router_logits

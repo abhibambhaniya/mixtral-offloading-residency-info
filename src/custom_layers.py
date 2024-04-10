@@ -269,7 +269,23 @@ class SparseMoeWrapper(nn.Module):
         self.gate = gate
         self.experts = expert_cache
 
+        self.in_cache_experts = self.update_residency_info()
+
+    
+    def update_residency_info(self) -> list:
+
+        ## Index value of experts on chip 
+        onchip_exp_idx = [_exp_[1] for _exp_ in self.experts.group_infos[self.layer_id].main_infos]
+        
+        ## On hot encoded mask of on-chip experts
+        tensor = torch.zeros(self.num_experts, dtype=torch.long)
+        tensor[onchip_exp_idx] = 1
+        
+        return tensor
+
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
@@ -277,6 +293,7 @@ class SparseMoeWrapper(nn.Module):
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
@@ -289,8 +306,18 @@ class SparseMoeWrapper(nn.Module):
         # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
+        ## Unordered activated experts list
         active_experts = selected_experts.flatten().unique().tolist()
 
+        ## For Decode Phase only
+        # if hidden_states.shape[0] == 1:
+            # expert_residency_info = self.experts.group_infos[self.layer_id]
+            # print(f"On chip Experts:{expert_residency_info.main_infos} , Offloaded: {expert_residency_info.offloaded_infos}")
+            # for on_chip_num,_on_chip_exp_ in enumerate(expert_residency_info.main_infos):
+            #     print(f"On chip Expert {on_chip_num}:{_on_chip_exp_}")
+        self.in_cache_experts = self.update_residency_info()            
+        # print(self.in_cache_experts)
+        
         # Loop over all available experts in the model and perform the computation on each expert
         for (_layer_index, expert_idx), expert_layer in self.experts.load_experts(
                 *((self.layer_id, expert_idx) for expert_idx in active_experts), unordered=True):

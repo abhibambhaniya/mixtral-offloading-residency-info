@@ -271,8 +271,9 @@ class SparseMoeWrapper(nn.Module):
 
 ## ABHI
         self.in_cache_experts = self.update_residency_info()
-        self.routing_strategy = routing_strategy  # ["TOP-K", "THRESHOLDING"][0]
+        self.routing_strategy = routing_strategy  # ["TOP-K", "THRESHOLDING", "BIASING"][0]
         self.threshold = torch.tensor(routing_threshold, device='cuda:0')
+        self.bias_factor = 1.0
 
     
     def update_residency_info(self) -> list:
@@ -282,14 +283,14 @@ class SparseMoeWrapper(nn.Module):
 
         return onchip_exp_idx
     
-    def get_experts_idx_thresholding(self, weigths, k) -> torch.return_types.topk:
+    def get_experts_idx_thresholding(self, weights, k) -> torch.return_types.topk:
 
         ## On hot encoded mask of on-chip experts
         expert_on_chip_one_hot = torch.zeros(self.num_experts, dtype=torch.long, device='cuda:0')
         expert_on_chip_one_hot[self.in_cache_experts] = 1
 
         ### STEP 1: Increase the value of experts on chip
-        updated_weights = weigths + expert_on_chip_one_hot * self.threshold       
+        updated_weights = weights + expert_on_chip_one_hot * self.threshold       
 
         ### STEP 2: Find Top K with updated weights
         values, indices = torch.topk(updated_weights, k, dim=-1)
@@ -300,6 +301,18 @@ class SparseMoeWrapper(nn.Module):
 
         return values, indices
 ## IHBA
+    
+    def get_experts_logit_biasing(self, logits, k) -> torch.return_types.topk:
+        off_chip_experts = [i for i in range(self.num_experts) if i not in self.in_cache_experts]
+
+        # TODO: TRACK EXPERT FRQUENCIES
+        expert_frequencies = torch.ones(self.num_experts) / self.num_experts # CURRENTLY HARD-CODED
+        frequency_penalties = self.bias_factor * (expert_frequencies - 1)
+        
+        updated_logits = logits.copy()
+        updated_logits[off_chip_experts] += frequency_penalties[off_chip_experts]
+        updated_logits, indices = torch.topk(logits, k, dim=-1)
+        return updated_logits, indices
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
 ## ABHI
@@ -318,6 +331,9 @@ class SparseMoeWrapper(nn.Module):
         elif self.routing_stategy == 'THRESHOLDING':
             #### THRESHOLDING
             routing_weights, selected_experts = self.get_experts_idx_thresholding(routing_weights, self.top_k)
+        elif self.routing_strategy == 'BIASING':
+            routing_logits, selected_experts = self.get_experts_logit_biasing(router_logits, self.top_k)
+            routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         else:
             raise Exception(f"Unknown routing strategy requested: {self.routing_strategy}")
 

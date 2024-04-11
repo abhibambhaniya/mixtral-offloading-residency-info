@@ -257,7 +257,7 @@ class MixtralBLockSparseTop2MLP_HQQ(nn.Module):
 
 
 class SparseMoeWrapper(nn.Module):
-    def __init__(self, config, layer_id, gate, expert_cache):
+    def __init__(self, config, layer_id, gate, expert_cache, routing_strategy="TOP-K", routing_threshold=0.05):
         super().__init__()
 
         self.hidden_dim = config.hidden_size
@@ -271,7 +271,8 @@ class SparseMoeWrapper(nn.Module):
 
 ## ABHI
         self.in_cache_experts = self.update_residency_info()
-        self.threshold = torch.tensor(0.05, device='cuda:0')                                   ## TODO:@Sashankh, update this
+        self.routing_strategy = routing_strategy  # ["TOP-K", "THRESHOLDING"][0]
+        self.threshold = torch.tensor(routing_threshold, device='cuda:0')
 
     
     def update_residency_info(self) -> list:
@@ -311,11 +312,14 @@ class SparseMoeWrapper(nn.Module):
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
 
-        #### DEFAULT
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-        
-        #### THRESHOLDING
-        # routing_weights, selected_experts = self.get_experts_idx_thresholding(routing_weights, self.top_k)
+        if self.routing_strategy == 'TOP-K':
+            #### DEFAULT
+            routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        elif self.routing_stategy == 'THRESHOLDING':
+            #### THRESHOLDING
+            routing_weights, selected_experts = self.get_experts_idx_thresholding(routing_weights, self.top_k)
+        else:
+            raise Exception(f"Unknown routing strategy requested: {self.routing_strategy}")
 
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype

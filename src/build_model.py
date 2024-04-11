@@ -168,6 +168,8 @@ def build_model(
     quant_config: QuantConfig,
     offload_config: OffloadConfig,
     state_path: str,
+    routing_strategy: str = 'TOP-K',
+    routing_threshold: float = 0.05
 ):
     model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
@@ -214,6 +216,8 @@ def build_model(
             layer_idx,
             curr_layer.block_sparse_moe.gate,
             expert_cache,
+            routing_strategy,
+            routing_threshold
         )
 
         for expert_idx in range(model_config.num_local_experts):

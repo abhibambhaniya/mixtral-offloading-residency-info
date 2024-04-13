@@ -169,9 +169,9 @@ def build_model(
     offload_config: OffloadConfig,
     state_path: str,
     routing_strategy: str = 'TOP-K',
-    routing_threshold: float = 0.05
+    routing_threshold: float = 0.05,
+    model_name="mistralai/Mixtral-8x7B-Instruct-v0.1"
 ):
-    model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
     state_dict_00 = load_00_expert_state_dict(state_path, device)
 

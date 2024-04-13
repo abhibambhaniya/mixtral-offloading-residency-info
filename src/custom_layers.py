@@ -328,7 +328,7 @@ class SparseMoeWrapper(nn.Module):
         if self.routing_strategy == 'TOP-K':
             #### DEFAULT
             routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-        elif self.routing_stategy == 'THRESHOLDING':
+        elif self.routing_strategy == 'THRESHOLDING':
             #### THRESHOLDING
             routing_weights, selected_experts = self.get_experts_idx_thresholding(routing_weights, self.top_k)
         elif self.routing_strategy == 'BIASING':

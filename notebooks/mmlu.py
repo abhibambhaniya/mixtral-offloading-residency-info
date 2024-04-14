@@ -6,6 +6,8 @@ import pandas as pd
 from categories import subcategories, categories
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import time
+from transformers import TextStreamer
+
 
 choices = ["A", "B", "C", "D"]
 
@@ -30,7 +32,7 @@ def format_example(df, idx, include_answer=True):
 
 
 def gen_prompt(train_df, subject, k=-1):
-    prompt = "The following are multiple choice questions (with answers) about {}.\n\n".format(
+    prompt = "The following are multiple choice questions (with answers) about {}. Always answer among [A, B, C, D]\n\n".format(
         format_subject(subject)
     )
     if k == -1:
@@ -43,16 +45,21 @@ def gen_prompt(train_df, subject, k=-1):
 @torch.no_grad()
 def eval(ntrain, subject, model, tokenizer, dev_df, test_df):
     cors = []
-    all_probs = []
-    answers = choices[: test_df.shape[1] - 2]
+    all_times = []
+    exp_load_saved = []
 
+    answers = choices[: test_df.shape[1] - 2]
+    # print(answers)
     for i in range(test_df.shape[0]):
         # get prompt and make sure it fits
         k = ntrain
         prompt_end = format_example(test_df, i, include_answer=False)
         train_prompt = gen_prompt(dev_df, subject, k)
         prompt = train_prompt + prompt_end
-
+        # print("TRAIN")
+        # print(train_prompt)
+        # print("END")
+        # print(prompt_end)
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.cuda()
 
         while input_ids.shape[-1] > 2048:
@@ -68,65 +75,64 @@ def eval(ntrain, subject, model, tokenizer, dev_df, test_df):
         
         seq_len = input_ids.size(1)
         attention_mask = torch.ones([1, seq_len], dtype=torch.int, device=model.device)
-
-        # model.generate(
-        # input_ids=input_ids,
-        # attention_mask=attention_mask,
-        # past_key_values=past_key_values,
+        streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    
+        # print(input_ids.size(), attention_mask.size())
+        start_time = time.time()
+        outputs = model.generate(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
         # streamer=streamer,
-        # do_sample=True,
+        do_sample=False,
         # temperature=0.9,
         # top_p=0.9,
-        # min_new_tokens=1000,
-        # max_new_tokens=1000,
-        # pad_token_id=tokenizer.eos_token_id,
-        # return_dict_in_generate=True,
-        # # output_hidden_states=True,
-        # # decoder_router_logits=True, 
-        # output_router_logits=True,
-        # )
-
-        logits = model(
-            input_ids=input_ids, attention_mask=attention_mask,
-        ).logits.flatten()
-
-        # print(logits)
-
-        probs = (
-            torch.nn.functional.softmax(
-                torch.tensor(
-                    [
-                        logits[tokenizer("A").input_ids[0]],
-                        logits[tokenizer("B").input_ids[0]],
-                        logits[tokenizer("C").input_ids[0]],
-                        logits[tokenizer("D").input_ids[0]],
-                    ]
-                ),
-                dim=0,
-            )
-            .detach()
-            .cpu()
-            .numpy()
+        min_new_tokens=1,
+        max_new_tokens=2,
+        pad_token_id=tokenizer.eos_token_id,
+        return_dict_in_generate=True,
+        # output_hidden_states=True,
+        # decoder_router_logits=True, 
+        output_router_logits=True,
+        # output_logits = False
         )
-        pred = {0: "A", 1: "B", 2: "C", 3: "D"}[np.argmax(probs)]
+        times = time.time() - start_time
+        # print(outputs.sequences[-1][-2])
+        # break
+        # logits = model(
+        #     input_ids=input_ids, attention_mask=attention_mask, 
+        # ).logits.flatten()
+        total_experts_saved = 0
+        for i in outputs['router_logits'][-32:]:
+            if len(i) > 1:
+                total_experts_saved += i[1]
+            else:
+                pass
+        
+        
+        pred = tokenizer.decode(outputs.sequences[-1][-2])
+        # print(tokenizer.decode(outputs.sequences[-1][-2]))
+        # print(tokenizer("A").input_ids[1], tokenizer("B").input_ids[1], tokenizer("C").input_ids[1], tokenizer("D").input_ids[1])
 
         cor = pred == label
         cors.append(cor)
-        all_probs.append(probs)
+        all_times.append(times)
+        exp_load_saved.append(total_experts_saved)
+        # break
 
     acc = np.mean(cors)
     cors = np.array(cors)
 
-    all_probs = np.array(all_probs)
-    print("Average accuracy {:.3f} - {}".format(acc, subject))
+    all_times = np.array(all_times)
+    exp_load_saved = np.array(exp_load_saved)
 
-    return cors, acc, all_probs
+    print("Average accuracy {:.3f} , Average Time:{:0.3f} sec, avg expert load reduced: {}, - {}".format(acc, np.mean(all_times), np.mean(exp_load_saved),  subject))
+
+    return cors, acc, all_times, exp_load_saved
 
 
-def test_mmlu(model_name, model_loaded, tokenizer):
-    ntrain =  5
-    data_dir = '/nethome/abambhaniya3/synergy3/Google-MoE/mmlu'
-    save_dir = 'results'
+def test_mmlu(model_name, model_loaded, tokenizer, data_dir='/nethome/abambhaniya3/synergy3/Google-MoE/mmlu', save_dir = 'results'):
+    ntrain =  5         ## 5 Shot
+    
 
     model = model_loaded
     tokenizer = tokenizer
@@ -156,9 +162,10 @@ def test_mmlu(model_name, model_loaded, tokenizer):
         )[: ntrain]
         test_df = pd.read_csv(
             os.path.join(data_dir, "test", subject + "_test.csv"), header=None
-        )
-
-        cors, acc, probs = eval(ntrain, subject, model, tokenizer, dev_df, test_df)
+        ).sample(10)
+        print(f'Starting {subject}, dev size:{dev_df.shape}, Test size:{test_df.shape}')
+        
+        cors, acc, times, exp_load_saved = eval(ntrain, subject, model, tokenizer, dev_df, test_df)
         subcats = subcategories[subject]
         for subcat in subcats:
             subcat_cors[subcat].append(cors)
@@ -168,9 +175,13 @@ def test_mmlu(model_name, model_loaded, tokenizer):
         all_cors.append(cors)
 
         test_df["{}_correct".format(model_name)] = cors
-        for j in range(probs.shape[1]):
-            choice = choices[j]
-            test_df["{}_choice{}_probs".format(model_name, choice)] = probs[:, j]
+        test_df["{}_times".format(model_name)] = times
+        test_df["{}_exp_load_red".format(model_name)] = exp_load_saved
+        # print(times)
+        # for j in range(times.shape[0]):
+        #     choice = choices[j]
+        #     test_df["{}_choice{}_times".format(model_name, choice)] = times[:, j]
+    
         test_df.to_csv(
             os.path.join(
                 save_dir, "results_{}".format(model_name), "{}.csv".format(subject)

@@ -5,3 +5,6 @@ tqdm~=4.66.2
 git+https://github.com/abhibambhaniya/MoE_Expert_Scheduler.git@28c4f7f958922fe234fab6bd8737a5191fce4d9a
 datasets~=2.18.0
 evaluate~=0.4.1
+jupyterlab
+notebook
+ipython

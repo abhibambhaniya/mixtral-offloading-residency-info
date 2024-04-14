@@ -162,7 +162,7 @@ def test_mmlu(model_name, model_loaded, tokenizer, data_dir='/nethome/abambhaniy
         )[: ntrain]
         test_df = pd.read_csv(
             os.path.join(data_dir, "test", subject + "_test.csv"), header=None
-        ).sample(10)
+        )
         print(f'Starting {subject}, dev size:{dev_df.shape}, Test size:{test_df.shape}')
         
         cors, acc, times, exp_load_saved = eval(ntrain, subject, model, tokenizer, dev_df, test_df)

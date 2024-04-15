@@ -269,6 +269,8 @@ class SparseMoeWrapper(nn.Module):
         self.gate = gate
         self.experts = expert_cache
 
+        with open('expert_frequencies.npy', 'rb') as f:
+            self.expert_frequencies = torch.load(f)
 
 ## ABHI
         self.in_cache_experts = self.update_residency_info()
@@ -311,10 +313,7 @@ class SparseMoeWrapper(nn.Module):
     
     def get_experts_logit_biasing(self, logits, k) -> torch.return_types.topk:
         off_chip_experts = [i for i in range(self.num_experts) if i not in self.in_cache_experts]
-
-        # TODO: TRACK EXPERT FRQUENCIES
-        expert_frequencies = torch.ones(self.num_experts, device=self.device) / self.num_experts # CURRENTLY HARD-CODED
-        frequency_penalties = self.bias_factor * (expert_frequencies - 1)
+        frequency_penalties = self.bias_factor * (self.expert_frequencies - 1)
         
         updated_logits = logits.copy()
         updated_logits[off_chip_experts] += frequency_penalties[off_chip_experts]

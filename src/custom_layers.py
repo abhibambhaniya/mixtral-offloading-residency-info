@@ -268,9 +268,7 @@ class SparseMoeWrapper(nn.Module):
         self.layer_id = layer_id
         self.gate = gate
         self.experts = expert_cache
-
-        with open('expert_frequencies.npy', 'rb') as f:
-            self.expert_frequencies = torch.load(f)
+        self.expert_frequencies = torch.from_numpy(np.load('expert_frequencies.npy'))
 
 ## ABHI
         self.in_cache_experts = self.update_residency_info()

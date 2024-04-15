@@ -6,6 +6,7 @@ from typing import Dict, Any
 from hqq.core.quantize import HQQLinear, Quantizer
 
 import torch
+import numpy as np
 from torch import nn
 from torch.nn import functional as F
 

@@ -310,19 +310,24 @@ class SparseMoeWrapper(nn.Module):
         return values, indices
 ## IHBA
     
-    def get_experts_logit_biasing(self, logits, k) -> torch.return_types.topk:
-        off_chip_experts = [i for i in range(self.num_experts) if i not in self.in_cache_experts]
-        frequency_penalties = self.bias_factor * (self.expert_frequencies[self.layer_id] - 1)
+    def get_experts_logit_biasing(self, logits) -> torch.return_types.topk:
+        expert_on_chip_one_hot = torch.ones(self.num_experts, dtype=torch.long, device=self.device)
+        expert_on_chip_one_hot[self.in_cache_experts] = 0
+        frequency_penalties = (self.bias_factor * (self.expert_frequencies[self.layer_id] - 1)).to(self.device)
+        frequency_penalties *= expert_on_chip_one_hot 
+        updated_logits = logits.clone()
+#         print(updated_logits, frequency_penalties)
         
-        updated_logits = logits.copy()
-        updated_logits[off_chip_experts] += frequency_penalties[off_chip_experts]
-        updated_logits, indices = torch.topk(updated_logits, k, dim=-1)
-        
-        ### STEP 3: change the weight to original weights
-        mask = torch.any(self.in_cache_experts.unsqueeze(-1) == indices.unsqueeze(-2), dim=-2)
-        updated_logits[mask] -= self.frequency_penalties[mask]
-        
-        return updated_logits, indices
+        updated_logits += frequency_penalties
+#         updated_logits, indices = torch.topk(updated_logits, k, dim=-1)
+#         
+#         ### STEP 3: change the weight to original weights
+#         mask = torch.any(self.in_cache_experts.unsqueeze(-1) == indices.unsqueeze(-2), dim=-2)
+#         print(updated_logits, mask, indices, )
+#         updated_logits[mask] -= frequency_penalties[mask]
+#         
+#         print(updated_logits, indices)
+        return updated_logits
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
 ## ABHI
@@ -342,8 +347,14 @@ class SparseMoeWrapper(nn.Module):
             #### THRESHOLDING
             routing_weights, selected_experts = self.get_experts_idx_thresholding(routing_weights, self.top_k)
         elif self.routing_strategy == 'BIASING':
-            routing_logits, selected_experts = self.get_experts_logit_biasing(router_logits, self.top_k)
+            _, original_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        
+            routing_logits = self.get_experts_logit_biasing(router_logits)
             routing_weights = F.softmax(routing_logits, dim=1, dtype=torch.float)
+            routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+
+            self.expert_load_saved += len(set(original_experts.flatten().tolist()) - set(selected_experts.flatten().tolist()))  ## Values in original_indices but not in indicess
+#             print(og_experts, selected_experts, self.in_cache_experts)
         else:
             raise Exception(f"Unknown routing strategy requested: {self.routing_strategy}")
 

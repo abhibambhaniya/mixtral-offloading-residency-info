@@ -339,8 +339,8 @@ class SparseMoeWrapper(nn.Module):
         router_logits = self.gate(hidden_states)
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
-
-        if self.routing_strategy == 'TOP-K' or sequence_length != 1:
+                
+        if self.routing_strategy == 'TOP-K':
             #### DEFAULT
             routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         elif self.routing_strategy == 'THRESHOLDING':

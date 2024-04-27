@@ -1,26 +1,32 @@
-# Mixtral offloading
+# MoE-ERAS Submission Repository
 
-This project implements efficient inference of [Mixtral-8x7B models](https://mistral.ai/news/mixtral-of-experts/).
+## How do I replicate key results?
 
-## How does it work?
+- Performance gains in generation: `notebooks/Speedup Profiling Submission.ipynb`
+- Accuracy evaluation on Wikitext: ``
+- Accuracy evaluation on C4: ``
+- Activation pattern analysis: ``
 
-In summary, we achieve efficient inference of Mixtral-8x7B models through a combination of techniques:
+## How do I run these notebooks?
 
-* **Mixed quantization with HQQ**. We apply separate quantization schemes for attention layers and experts to fit the model into the combined GPU and CPU memory.
-* **MoE offloading strategy**. Each expert per layer is offloaded separately and only brought pack to GPU when needed. We store active experts in a LRU cache to reduce GPU-RAM communication when computing activations for adjacent tokens.
+All our code can be run on PACE.
 
-For more detailed information about our methods and results, please refer to our [tech-report](https://arxiv.org/abs/2312.17238).
+1. Connect to gatech VPN.
+2. Access `https://ondemand-ice.pace.gatech.edu/` and request and get a RHEL9 Interactive Desktop (from the top drop down) with H100.
+3. Enter the VM's GUI and open up a terminal.
+4. After setting up your git credentials, run `git clone git@github.com:abhibambhaniya/mixtral-offloading-residency-info.git`
+5. `cd mixtral-offloading-residency-info`
+6. `bash initial_setup.sh`
+7. `conda activate $TMP_DIR/moe-offload`
+8. `jupyter notebook`
+9. Open up the respective notebook and GO! :D 
 
-## Running
+## Where is our implementation?
 
-To try this demo, please use the demo notebook: [./notebooks/demo.ipynb](./notebooks/demo.ipynb) or [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/dvmazur/mixtral-offloading/blob/master/notebooks/demo.ipynb)
+Repo `MoE_Expert_Scheduler` (`huggingface/transformers` fork)
+ - Mixtral and Switch Transformer changes to collect router logits
+ - Changes to generation utils to return required data
 
-For now, there is no command-line script available for running the model locally. However, you can create one using the demo notebook as a reference. That being said, contributions are welcome!
+Repo `mixtral-offloading-residency-info` (`dvmazur/mixtral-offloading` fork)
+ - Implementation of biasing and thresholding
 
-## Work in progress
-
-Some techniques described in our technical report are not yet available in this repo. However, we are actively working on adding support for them in the near future.
-
-Some of the upcoming features are:
-* Support for other quantization methods
-* Speculative expert prefetching

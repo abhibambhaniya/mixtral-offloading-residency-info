@@ -33,7 +33,7 @@ import pickle
 
 model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 quantized_model_name = "lavawolfiee/Mixtral-8x7B-Instruct-v0.1-offloading-demo"
-state_path = "Mixtral-8x7B-Instruct-v0.1-offloading-demo1"
+state_path = "Mixtral-8x7B-Instruct-v0.1-offloading-demo"
 
 config = AutoConfig.from_pretrained(quantized_model_name)
 
@@ -137,8 +137,8 @@ encodings = tokenizer("\n\n".join(test["text"]), return_tensors="pt")
 
 # In[ ]:
 for stride in [512, 1024]:
-    for routing_config in [  ("THRESHOLDING",0.1), ("THRESHOLDING",0.25)]:
-    #for routing_config in [("TOP-K",0), ("THRESHOLDING",0.05) , ("THRESHOLDING",0.15), ("BIASING",0.25),  ("THRESHOLDING",0.1), ("THRESHOLDING",0.25)]:
+    #for routing_config in [  ("THRESHOLDING",0.1), ("THRESHOLDING",0.25)]:
+    for routing_config in [("TOP-K",0), ("THRESHOLDING",0.05) , ("THRESHOLDING",0.15), ("BIASING",0.25),  ("THRESHOLDING",0.1), ("THRESHOLDING",0.25)]:
     
         if 'model' in locals():
             del model

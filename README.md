@@ -3,9 +3,8 @@
 ## How do I replicate key results?
 
 - Performance gains in generation: `notebooks/Speedup Profiling Submission.ipynb`
-- Accuracy evaluation on Wikitext: ``
-- Accuracy evaluation on C4: ``
-- Activation pattern analysis: ``
+- Accuracy evaluation on Wikitext: `notebooks/wikitext_PPL_calculations.py`
+- Accuracy evaluation on C4: `notebooks/C4_PPL_calculations.py`
 
 ## How do I run these notebooks?
 
@@ -19,7 +18,10 @@ All our code can be run on PACE.
 6. `bash initial_setup.sh`
 7. `conda activate $TMP_DIR/moe-offload`
 8. `jupyter notebook`
-9. Open up the respective notebook and GO! :D 
+9. `cd notebooks`
+10. `huggingface-cli download lavawolfiee/Mixtral-8x7B-Instruct-v0.1-offloading-demo --quiet --cache-dir $TMP_DIR --local-dir Mixtral-8x7B-Instruct-v0.1-offloading-demo`
+11. For performance gain results: Open up the speed up notebook and GO! :D
+12. For quality results on wikitext/C4, run the respective python script. Ensure that step 10 completed successfully and verify that the local-dir matches the `state_path` in the script.  
 
 ## Where is our implementation?
 

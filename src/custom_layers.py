@@ -277,8 +277,6 @@ class SparseMoeWrapper(nn.Module):
         self.threshold = torch.tensor(routing_threshold, device=self.device)
         self.bias_factor = 1.0
         self.expert_load_saved = 0
-
-    
     def update_residency_info(self) -> list:
 
         ## Index value of experts on chip 
@@ -396,4 +394,4 @@ class SparseMoeWrapper(nn.Module):
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
 
-        return final_hidden_states, (router_logits, self.expert_load_saved)
+        return final_hidden_states, router_logits#(router_logits, self.expert_load_saved)

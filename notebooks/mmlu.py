@@ -92,7 +92,7 @@ def eval(ntrain, subject, model, tokenizer, dev_df, test_df):
         return_dict_in_generate=True,
         # output_hidden_states=True,
         # decoder_router_logits=True, 
-        output_router_logits=True,
+        output_router_logits=False,
         # output_logits = False
         )
         times = time.time() - start_time
@@ -102,11 +102,11 @@ def eval(ntrain, subject, model, tokenizer, dev_df, test_df):
         #     input_ids=input_ids, attention_mask=attention_mask, 
         # ).logits.flatten()
         total_experts_saved = 0
-        for i in outputs['router_logits'][-32:]:
-            if len(i) > 1:
-                total_experts_saved += i[1]
-            else:
-                pass
+        # for i in outputs['router_logits'][-32:]:
+        #     if len(i) > 1:
+        #         total_experts_saved += i[1]
+        #     else:
+        #         pass
         
         
         pred = tokenizer.decode(outputs.sequences[-1][-2])

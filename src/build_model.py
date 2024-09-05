@@ -9,6 +9,7 @@ from torch import nn
 
 from transformers import AutoConfig
 from transformers.models.mixtral import MixtralForCausalLM, MixtralConfig
+from transformers.models.mixtral.modeling_mixtral import MixtralBlockSparseTop2MLP
 
 from safetensors.torch import load_file
 
@@ -25,6 +26,10 @@ from .custom_layers import (
     SparseMoeWrapper,
 )
 from .utils import with_default_dtype
+from typing import Union
+
+from safetensors import safe_open
+from collections import OrderedDict
 
 
 @dataclass(frozen=True)
@@ -83,13 +88,6 @@ def replace_attn_layers(
         return layer
 
     for layer in model.model.layers:
-        layer.block_sparse_moe.gate = nn.Linear(
-            config.hidden_size,
-            config.num_local_experts,
-            dtype=torch.float16,
-            device=device,
-            bias=False,
-        )
 
         layer.self_attn.q_proj = patch_fct_hqq(
             (hidden_size, num_heads * head_dim), attn_quant_config
@@ -122,16 +120,19 @@ def get_default_ffn_quant_config(ffn_dim: int = 14336, hidden_dim: int = 4096):
 
 def make_empty_expert(
     model_config: MixtralConfig, quant_config: QuantConfig
-) -> MixtralBLockSparseTop2MLP_HQQ:
-    meta1, meta2 = quant_config.get_ffn_metas(
-        model_config.hidden_size, model_config.intermediate_size
-    )
-    return MixtralBLockSparseTop2MLP_HQQ(
-        model_config,
-        quant_config.ffn_config,
-        meta1,
-        meta2,
-    )
+) -> Union[MixtralBLockSparseTop2MLP_HQQ | MixtralBlockSparseTop2MLP] :
+    if quant_config is not None:
+        meta1, meta2 = quant_config.get_ffn_metas(
+            model_config.hidden_size, model_config.intermediate_size
+        )
+        return MixtralBLockSparseTop2MLP_HQQ(
+            model_config,
+            quant_config.ffn_config,
+            meta1,
+            meta2,
+        )
+    else:
+        return MixtralBlockSparseTop2MLP(model_config)
 
 
 def make_and_load_expert_wrapper(
@@ -155,11 +156,14 @@ def make_and_load_expert_wrapper(
     return MixtralExpertWrapper(expert, device)
 
 
-def load_00_expert_state_dict(states_dir: str, device: torch.device):
+def load_00_expert_state_dict(states_dir: str, device: torch.device, quantized: bool = True):
     index_path = os.path.join(states_dir, "model.safetensors.index.json")
     with open(index_path) as f:
         module_idx = f"model.layers.0.block_sparse_moe.experts.0"
-        state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.W_q"]
+        if quantized:
+            state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.W_q"]
+        else:
+            state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.weight"] 
     return load_file(os.path.join(states_dir, state_fpath), device=str(device))
 
 
@@ -173,7 +177,7 @@ def build_model(
     model_name="mistralai/Mixtral-8x7B-Instruct-v0.1"
 ):
 
-    state_dict_00 = load_00_expert_state_dict(state_path, device)
+    state_dict_00 = load_00_expert_state_dict(state_path, device, quantized = quant_config is not None)
 
     def _make_module():
         config = AutoConfig.from_pretrained(model_name)
@@ -192,7 +196,18 @@ def build_model(
         )
 
     model_config = AutoConfig.from_pretrained(model_name)
-    replace_attn_layers(model, model_config, quant_config, device)
+
+    for layer in model.model.layers:
+        layer.block_sparse_moe.gate = nn.Linear(
+            model_config.hidden_size,
+            model_config.num_local_experts,
+            dtype=torch.float16,
+            device=device,
+            bias=False,
+        )
+
+    if quant_config is not None:
+        replace_attn_layers(model, model_config, quant_config, device)
     state_index_path = os.path.join(state_path, "model.safetensors.index.json")
     with open(state_index_path) as f:
         weight_map = json.load(f)["weight_map"]
@@ -201,7 +216,21 @@ def build_model(
         state_path,
         weight_map["model.embed_tokens.weight"],
     )
-    model.load_state_dict(load_file(trunk_state_path, device=str(device)), strict=True)
+
+    def load_model_from_safetensors(model, state_path):
+        state_dict = OrderedDict()
+        safetensor_files = [os.path.join(state_path, file) for file in os.listdir(state_path) if file.endswith(".safetensors")]
+        for file in safetensor_files:
+            with safe_open(file, framework="pt", device=str(device)) as f:
+                for key in f.keys():
+                    state_dict[key] = f.get_tensor(key)
+    
+        model.load_state_dict(state_dict, strict=True)
+        return model
+    if quant_config is not None:
+        model.load_state_dict(load_file(trunk_state_path, device=str(device)), strict=True)
+    else:
+        model = load_model_from_safetensors(model, state_path)
 
     expert_cache = ExpertCache(
         make_module=_make_module,

@@ -34,11 +34,21 @@ from collections import OrderedDict
 
 @dataclass(frozen=True)
 class OffloadConfig:
-    main_size: int
-    offload_size: int
-    buffer_size: int
-    offload_per_layer: int
+    main_size: int          ## Number of Experts on Device(GPU)
+    offload_size: int       ## Number of Experts on Host(CPU)
+    buffer_size: int        ## Number additional space on Device (GPU)
+    offload_per_layer: int  ## Number of experts offloaded from each layer.
 
+def GPU_free_memory():
+    if torch.cuda.is_available():
+        device = torch.cuda.current_device()
+        total = torch.cuda.get_device_properties(device).total_memory
+        reserved = torch.cuda.memory_reserved(device)
+        allocated = torch.cuda.memory_allocated(device)
+        free = total - reserved
+        return free/2**30
+    else:
+        return 0
 
 class QuantConfig:
     def __init__(
@@ -132,8 +142,8 @@ def make_empty_expert(
             meta2,
         )
     else:
-        return MixtralBlockSparseTop2MLP(model_config)
-
+        return MixtralBlockSparseTop2MLP(model_config).to(torch.float16)
+        
 
 def make_and_load_expert_wrapper(
     config: MixtralConfig,
@@ -147,11 +157,18 @@ def make_and_load_expert_wrapper(
     index_path = os.path.join(states_dir, "model.safetensors.index.json")
     with open(index_path) as f:
         module_idx = f"model.layers.{layer_idx}.block_sparse_moe.experts.{expert_idx}"
-        state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.W_q"]
+        if quant_config is not None:
+            state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.W_q"]
+            state_dict = load_file(os.path.join(states_dir, state_fpath), device=str(device))
+        else:
 
-    state_dict = load_file(os.path.join(states_dir, state_fpath), device=str(device))
+            state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.weight"]
+            full_state_dict = load_file(os.path.join(states_dir, state_fpath), device=str(device))
+            filtered_dict = {key: full_state_dict[key] for key in full_state_dict if key.startswith(module_idx)}
+            state_dict = {key[len(module_idx)+1:]: value for key, value in filtered_dict.items()}
+
     expert = make_empty_expert(config, quant_config)
-    expert.load_state_dict(state_dict, strict=True)
+    expert.load_state_dict(state_dict, strict=False)
 
     return MixtralExpertWrapper(expert, device)
 
@@ -162,10 +179,15 @@ def load_00_expert_state_dict(states_dir: str, device: torch.device, quantized: 
         module_idx = f"model.layers.0.block_sparse_moe.experts.0"
         if quantized:
             state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.W_q"]
+            state_dict = load_file(os.path.join(states_dir, state_fpath), device=str(device))
         else:
-            state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.weight"] 
-    return load_file(os.path.join(states_dir, state_fpath), device=str(device))
 
+            state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.weight"]
+            full_state_dict = load_file(os.path.join(states_dir, state_fpath), device=str(device))
+            filtered_dict = {key: full_state_dict[key] for key in full_state_dict if key.startswith(module_idx)}
+            state_dict = {key[len(module_idx)+1:]: value for key, value in filtered_dict.items()}
+
+    return state_dict
 
 def build_model(
     device: torch.device,
@@ -174,15 +196,20 @@ def build_model(
     state_path: str,
     routing_strategy: str = 'TOP-K',
     routing_threshold: float = 0.05,
-    model_name="mistralai/Mixtral-8x7B-Instruct-v0.1"
+    model_name="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    cache_dir_name=None
 ):
 
     state_dict_00 = load_00_expert_state_dict(state_path, device, quantized = quant_config is not None)
 
-    def _make_module():
+    def _make_module() -> MixtralExpertWrapper:
+        """ Makes an empty Expert Wrapper
+
+        Returns:
+            MixtralExpertWrapper
+        """
         config = AutoConfig.from_pretrained(model_name)
         expert = make_empty_expert(config, quant_config)
-        expert.load_state_dict(state_dict_00)
         return MixtralExpertWrapper(expert, device=device)
 
     with device, with_default_dtype(torch.float16):
@@ -196,7 +223,6 @@ def build_model(
         )
 
     model_config = AutoConfig.from_pretrained(model_name)
-
     for layer in model.model.layers:
         layer.block_sparse_moe.gate = nn.Linear(
             model_config.hidden_size,
@@ -218,19 +244,33 @@ def build_model(
     )
 
     def load_model_from_safetensors(model, state_path):
+        """Loads the Non-Expert weights from safetensor files when running the full model.
+
+        Args:
+            model (nn.Model): Full Mixtral Model with dummy weight values
+            state_path (str): Path to the folder where safetensor files are stored
+
+        Returns:
+            model: Model with Non-expert weights loaded.
+        """
         state_dict = OrderedDict()
         safetensor_files = [os.path.join(state_path, file) for file in os.listdir(state_path) if file.endswith(".safetensors")]
+        safetensor_files.sort()
         for file in safetensor_files:
             with safe_open(file, framework="pt", device=str(device)) as f:
                 for key in f.keys():
-                    state_dict[key] = f.get_tensor(key)
+                    if "experts" not in key:
+                        state_dict[key] = f.get_tensor(key)
     
-        model.load_state_dict(state_dict, strict=True)
+        model.load_state_dict(state_dict, strict=False)
         return model
     if quant_config is not None:
         model.load_state_dict(load_file(trunk_state_path, device=str(device)), strict=True)
     else:
+        ## Loads the Non-Expert Weights
         model = load_model_from_safetensors(model, state_path)
+        
+        print(f"Attn Weights loaded. Remaining Memory:{GPU_free_memory()} GB")
 
     expert_cache = ExpertCache(
         make_module=_make_module,
@@ -238,6 +278,9 @@ def build_model(
         offload_size=offload_config.offload_size,
         buffer_size=offload_config.buffer_size,
     )
+    if cache_dir_name is not None:
+        expert_cache.load_from_files(directory=cache_dir_name, make_module=_make_module)
+
     for layer_idx in trange(model_config.num_hidden_layers, desc="Loading experts"):
         curr_layer = model.model.layers[layer_idx]
         curr_layer.block_sparse_moe = SparseMoeWrapper(
@@ -249,26 +292,27 @@ def build_model(
             routing_threshold
         )
 
-        for expert_idx in range(model_config.num_local_experts):
-            do_offload = expert_idx < offload_config.offload_per_layer
+        if cache_dir_name is None:
+            for expert_idx in range(model_config.num_local_experts):
+                do_offload = expert_idx < offload_config.offload_per_layer
 
-            expert_wrapper = make_and_load_expert_wrapper(
-                config=model_config,
-                quant_config=quant_config,
-                states_dir=state_path,
-                expert_uid=(layer_idx, expert_idx),
-                device=device,
-            )
+                expert_wrapper = make_and_load_expert_wrapper(
+                    config=model_config,
+                    quant_config=quant_config,
+                    states_dir=state_path,
+                    expert_uid=(layer_idx, expert_idx),
+                    device=device,
+                )
 
-            expert_cache.add_expert(
-                uid=(layer_idx, expert_idx),
-                module=expert_wrapper,
-                eviction_group=layer_idx,
-                offload=do_offload,
-            )
+                expert_cache.add_expert(
+                    uid=(layer_idx, expert_idx),
+                    module=expert_wrapper,
+                    eviction_group=layer_idx,
+                    offload=do_offload,
+                )
 
-            del expert_wrapper
-            torch.cuda.synchronize(device)
-            torch.cuda.empty_cache()
-
+                del expert_wrapper
+                torch.cuda.synchronize(device)
+                torch.cuda.empty_cache()
+                print(f"Expert {layer_idx} {expert_idx} loaded. Remaining Memory:{GPU_free_memory()} GB")
     return model

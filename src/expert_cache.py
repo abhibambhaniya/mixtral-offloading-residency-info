@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Iterator, Tuple, List
 from collections import deque, defaultdict, OrderedDict
 from .expert_wrapper import MixtralExpertWrapper
 
+import os
 import torch
 from torch import nn
 
@@ -53,8 +54,18 @@ class EvictionGroupInfo:
 
 
 class ExpertCache:
+    """
+        Expert Cache contains all the experts with layer id and expert id.
+    """
     def __init__(self, make_module: callable, main_size: int, offload_size: int, buffer_size: int):
-        """Dynamically loads an array of modules with identical hyperparameters"""
+        """Dynamically loads an array of modules with identical hyperparameters
+
+        Args:
+            make_module (callable): Type of each expert module to be stored in the cache
+            main_size (int): Number of Experts on Device(GPU)
+            offload_size (int): Number of Experts on Host(CPU)
+            buffer_size (int): Number additional space on Device (GPU)
+        """
         self.module_type = self.module_size = self.device = None
         self.active = False
 
@@ -199,3 +210,52 @@ class ExpertCache:
         info_to_evict.index, info_to_load.index = info_to_load.index, info_to_evict.index
         self.group_infos[info_to_load.eviction_group].swap(info_to_load, info_to_evict)
         return device_expert_buffer
+
+
+    def save_to_files(self, directory: str):
+        """Save the entire cache and all its contents to files."""
+        os.makedirs(directory, exist_ok=True)
+        
+        # Save main modules
+        for i, module in enumerate(self.main_modules):
+            torch.save(module.state_dict(), os.path.join(directory, f"main_module_{i}.pt"))
+        
+        # Save offloaded storages
+        for i, storage in enumerate(self.offloaded_storages):
+            torch.save(storage, os.path.join(directory, f"offloaded_storage_{i}.pt"))
+        
+        # Save metadata
+        metadata = {
+            "registered_experts": self.registered_experts,
+            "main_infos": self.main_infos,
+            "offloaded_infos": self.offloaded_infos,
+            "group_infos": self.group_infos
+        }
+        torch.save(metadata, os.path.join(directory, "metadata.pt"))
+
+    @classmethod
+    def load_from_files(cls, directory: str, make_module: callable) -> 'ExpertCache':
+        """Load the entire cache from the files saved by save_to_files."""
+        metadata = torch.load(os.path.join(directory, "metadata.pt"))
+        
+        # Initialize the cache with the correct sizes
+        main_size = len([f for f in os.listdir(directory) if f.startswith("main_module_")])
+        offload_size = len([f for f in os.listdir(directory) if f.startswith("offloaded_storage_")])
+        cache = cls(make_module, main_size, offload_size, buffer_size=0)
+        
+        # Load main modules
+        for i in range(main_size):
+            state_dict = torch.load(os.path.join(directory, f"main_module_{i}.pt"))
+            cache.main_modules[i].load_state_dict(state_dict)
+        
+        # Load offloaded storages
+        for i in range(offload_size):
+            cache.offloaded_storages[i] = torch.load(os.path.join(directory, f"offloaded_storage_{i}.pt"))
+        
+        # Restore metadata
+        cache.registered_experts = metadata["registered_experts"]
+        cache.main_infos = metadata["main_infos"]
+        cache.offloaded_infos = metadata["offloaded_infos"]
+        cache.group_infos = metadata["group_infos"]
+        
+        return cache
